@@ -1,0 +1,173 @@
+[build-system]
+requires = ["setuptools>=45", "setuptools_scm[toml]>=6.2"]
+
+[project]
+name = "eai-repair"
+readme = "README.md"
+dynamic = ["version"]
+requires-python = ">=3.7"
+dependencies = [
+    "ftfy==6.2.0",
+    "regex==2024.5.15",
+    "tensorflow == 2.8",
+    "tensorflow-addons == 0.18.0",
+    "protobuf <= 3.20",
+    "scikit-learn == 1.0.2",
+    "scikit-image == 0.19.2",
+    "pandas == 2.0",
+    "matplotlib == 3.5.1",
+    "ijson == 3.1.3",
+    "fire == 0.4.0",
+    "tqdm == 4.46",
+    "torch",
+    "torchvision",
+    "pycocotools",
+    "ultralytics-yolov5",
+    "pymoo",
+    "torchmetrics",
+    "timm == 0.6.12"
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-mock",
+    "pytest-cov == 3.0.0",
+]
+
+dev = [
+    "black ~= 23.3",
+    "ruff >= 0.0.263",
+    "eai-repair[test]",
+]
+
+[tool.setuptools]
+packages = [
+    "repair",
+    "model",
+    "dataset",
+    "settings",
+]
+
+[tool.ruff]
+line-length = 90
+update-check = false
+ignore-init-module-imports = true
+
+extend-exclude = [
+    # exclude default resource dirs
+    "inputs",
+    "outputs",
+    "logs",
+    "settings",
+    "__init__.py",
+]
+
+select = [
+    # pyflakes
+    "F",
+    # pycodestyle
+    "E", "W",
+    # pydocstyle
+    "D",
+    # isort
+    "I",
+    # pyupgrade
+    "UP",
+    # pep8-naming
+    "N",
+    # flake8-2020
+    "YTT",
+    # flake8-bandit
+    # should not ignore exception without logging
+    "S110", "S112",
+    # flake8-blind-except
+    "BLE",
+    # flake8-bugbear
+    "B",
+    # flake8-builtins
+    "A",
+    # flake8-errmsg
+    "EM103",
+    # flake8-quotes
+    "Q",
+    # flake8-type-checking
+    "TCH",
+    # flake8-return
+    "RET",
+    # flake8-use-pathlib
+    "PTH",
+    # pylint
+    "PLE", "PLR", "PLW",
+    # numpy
+    "NPY",
+    # tryceptor 
+    "TRY",
+]
+
+ignore = [
+    # too much
+    "D203",
+    "D213",
+    # false positive
+    "D401",
+    # too much
+    "D406",
+    "D407",
+    # only works for python>=3.10
+    "B905",
+    # too many returns
+    "PLR0911",
+    # too many args
+    "PLR0913",
+    # too many statements
+    "PLR0915",
+    # controversal
+    "PLR5501",
+    "PLW0603",
+    # too much
+    "PTH123",
+    # too much
+    "RET504",
+    "RET505",
+    # too much
+    "TRY003",
+]
+
+[tool.ruff.per-file-ignores]
+"test_*.py" = [
+    # allow tests to just write description
+    "D205",
+    # test uses assert
+    "B011",
+    "B015",
+    # magic value are useful in case of test
+    "PLR2004",
+]
+
+[tool.ruff.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.isort]
+section-order = ["future", "standard-library", "science", "first-party", "third-party", "local-folder"]
+
+[tool.ruff.isort.sections]
+"science" = ["numpy", "pandas", "tensorflow", "keras", "pytorch", "h5py"]
+
+[tool.black]
+line-length = 90
+target-version = ["py37", "py38", "py39", "py310"]
+extend-exclude = '''
+(
+    demo
+    | inputs
+    | outputs
+    | settings
+)
+'''
+
+[tool.pytest.ini_options]
+testpaths = ["./tests"]
+python_classes = ["*Test"]
+python_files = ["test_*.py"]
+markers = ["models_data: used to pass index to the models fixture"]
