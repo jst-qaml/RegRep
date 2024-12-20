@@ -1,4 +1,5 @@
 """Repairing functions."""
+import datetime
 import os
 import pickle
 import time
@@ -7,8 +8,9 @@ from typing import List
 
 import numpy
 
+from repair.semseg.helpers.scoring import score_tuples_batch
 from repair.semseg.models import EIARepairModel
-from repair.semseg.problems import EAIRepairProblem
+from repair.semseg.problems import EAIRepairProblem, ImprovementType
 
 import dill
 import torch
@@ -244,3 +246,180 @@ def repair_weights(  # noqa PLR0912
         output_model.disable_precomputing()
 
     return output_model
+
+def interval_filtering(  # noqa PLR0912
+    original_model: EIARepairModel,
+    target_weights: List,
+    dataloader: torch.utils.data.DataLoader,
+    problem_type: EAIRepairProblem,
+    devices: List[torch.device],
+    bounds=(0, 2),
+    folder="",
+    name="",
+    modified_weights=None,
+):
+    """
+    Repairs the weights of the model based on specified target weights using Interval.
+
+    Args:
+        original_model (torch.nn.Module): The original model to be repaired.
+        target_weights (List): List of target weights to be repaired.
+        dataloader (DataLoader): DataLoader for the dataset.
+        problem_type (EAIRepairProblem): The type of problem being solved
+        devices (List[torch.device]): List of devices (e.g., GPUs) to use for computation.
+        repair_indexes: (Specify the type)
+        save_history (bool, optional): Whether to save repair history. Defaults to False.
+        generations (int, optional): Number of generations for the repair process.
+            Defaults to 100.
+
+    Returns:
+        torch.nn.Module: Repaired model.
+    """
+    assert (
+        len(target_weights) == 1
+    ), "Interval_Filtering currently only supports single weights"
+
+    model_copy = deepcopy(original_model).to(devices[0])
+    if modified_weights is not None:
+        named_modules = dict(model_copy.named_modules())
+        for key in modified_weights:
+            named_modules[key[0]].weight.data[key[1]] = (
+                modified_weights[key] * named_modules[key[0]].weight.data[key[1]]
+            )
+    named_modules = dict(model_copy.named_modules())
+    original_modules = dict(original_model.named_modules())
+
+    # Create directory for storing results if it doesn't exist
+    os.makedirs(f"./results/{folder}", exist_ok=True)  # noqa PTH103
+    logs_prefix = f"./results/{folder}/repair_{name}_{int(time.time())}"
+
+    # Open a CSV file to log repair progress
+    with open(logs_prefix + ".csv", "w") as handle:
+        handle.write("generation")
+        for i in range(len(target_weights)):
+            handle.write(",x" + str(i))
+        handle.write(",fitness\n")
+
+    # setup for origin model score calculation
+    scores = score_tuples_batch(
+        [model_copy],
+        [devices[0]],
+        problem_type,
+        dataloader,
+        False,
+    )
+    scores = [x[2] for x in scores]
+
+    original_score = sum(scores) / len(scores)
+
+    best = [1.0, original_score]
+    budget = 10
+    i = 0
+
+    lower, middle, upper = bounds[0], 1.0, bounds[1]
+    while budget > 0:
+        candidates = [
+            middle - (abs(middle - lower) / 2),
+            middle + (abs(upper - middle) / 2),
+        ]
+        candidate_scores = [None, None]
+
+        for j, v in enumerate(candidates):
+            key = target_weights[0]
+            named_modules[key[0]].weight.data[key[1]] = (
+                float(v) * original_modules[key[0]].weight.data[key[1]]
+            )
+
+            # get repaired model results (to compare with the original)
+            repaired_scores = score_tuples_batch(
+                [model_copy],
+                [devices[0]],
+                problem_type,
+                dataloader,
+                False,
+            )
+            repaired_scores = [x[2] for x in repaired_scores]
+
+            repaired_score = sum(repaired_scores) / len(repaired_scores)
+            candidate_scores[j] = repaired_score
+
+            with open(logs_prefix + ".csv", "a", buffering=1) as log_handle:
+                log_handle.write(f"{i}, {v}, {repaired_score}\n")
+
+            ct = datetime.datetime.now()
+            print(f"[{ct}] Result for {v} is [{repaired_score}] from [{lower};{upper}]")
+            print(f"[{ct}] Current Best is: {best} at {i}")
+
+            i += 1
+            budget -= 1
+
+        # Assign new Best and new Interval Bounds
+        if problem_type.improvement_type == ImprovementType.lower_is_better:
+            if candidate_scores[0] < best[1] or candidate_scores[1] < best[1]:
+                # Select the best of the two Candidates
+                index = 0 if candidate_scores[0] < candidate_scores[1] else 1
+                best = [candidates[index], candidate_scores[index]]
+        else:
+            # Select the best of the two Candidates
+            if candidate_scores[0] > best[1] or candidate_scores[1] > best[1]:
+                index = 0 if candidate_scores[0] > candidate_scores[1] else 1
+                best = [candidates[index], candidate_scores[index]]
+
+        if candidates[0] == best[0] or candidates[1] == best[0]:
+            # One of the new Values is better than the previous
+            if candidates[0] == best[0]:
+                # Select the strict lower Range [lower;middle]
+                lower, middle, upper = lower, candidates[0], middle
+            else:
+                # Select the strict higher Range [middle;upper]
+                lower, middle, upper = middle, candidates[1], upper
+        else:
+            # Neither is better, just move towards the better part
+            if problem_type.improvement_type == ImprovementType.lower_is_better:
+                if candidate_scores[0] < candidate_scores[1]:
+                    # Select the conservative Lower Range [Lower;candidate[1]]
+                    lower, middle, upper = (
+                        lower,
+                        lower + ((candidates[1] - lower) / 2),
+                        candidates[1],
+                    )
+                else:
+                    # Select the conservative Higher Range [candidate[0];Upper]
+                    lower, middle, upper = (
+                        candidates[0],
+                        candidates[0] + ((upper - candidates[0]) / 2),
+                        upper,
+                    )
+            else:
+                if candidate_scores[0] > candidate_scores[1]:
+                    # Select the conservative Lower Range [Lower;candidate[1]]
+                    lower, middle, upper = (
+                        lower,
+                        lower + ((candidates[1] - lower) / 2),
+                        candidates[1],
+                    )
+                else:
+                    # Select the conservative Higher Range [candidate[0];Upper]
+                    lower, middle, upper = (
+                        candidates[0],
+                        candidates[0] + ((upper - candidates[0]) / 2),
+                        upper,
+                    )
+
+    if modified_weights is None:
+        modified_weights = dict()
+
+    for w_c in target_weights:
+        module_name, weight_coord = w_c
+        modifier = best[0]
+        if (module_name, weight_coord) not in modified_weights:
+            modified_weights[module_name, weight_coord] = modifier
+        else:
+            current_modifier = modified_weights[module_name, weight_coord]
+            modified_weights[module_name, weight_coord] = current_modifier * modifier
+        print(f"Modifying {module_name} at {weight_coord} using {modifier}")
+        named_modules[module_name].weight.data[weight_coord] = (
+            best[0] * original_modules[module_name].weight.data[weight_coord]
+        )
+
+    return model_copy

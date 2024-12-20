@@ -8,15 +8,14 @@ import time
 import traceback
 
 from repair.semseg.main import main as repair
-from repair.semseg.models import SemsegModel
-from repair.semseg.problems import SemSegRepairProblem
+from repair.semseg.models import SemsegModel, DepthEstModel
+from repair.semseg.problems import (
+    SemSegRepairProblem, 
+    DepthEstRepairProblem, 
+    ImprovementType
+    )
 
-metric_sort_by = "mIoU"
 default_metric_value = 0
-
-baseline_model_path = "" # please fill with your base model for the SemSegModel class
-problem = SemSegRepairProblem
-model = SemsegModel
 
 class Logger:
     def __init__(self, file_path):
@@ -71,12 +70,22 @@ def repair_session(session_id, logs_path, run_hyperparams, unsearched_parameters
         print(f"Session {session_id} completed with status: Already Run")
         return
 
-    # override ceratin parameters
-    run_hyperparams["model"] = SemsegModel(
-        baseline_model_path,
-        run_hyperparams["device"],
-    )
-    run_hyperparams["problem"] = problem
+    # override certain parameters
+    if run_hyperparams["problem"] == "SemSegRepairProblem":
+        run_hyperparams["model"] = SemsegModel(
+            run_hyperparams["model_path"],
+            run_hyperparams["device"],
+        )
+        run_hyperparams["problem"] = SemSegRepairProblem
+        metric_sort_by = "mIoU"
+    elif run_hyperparams["problem"] == "DepthEstRepairProblem":
+        run_hyperparams["model"] = DepthEstModel(
+            run_hyperparams["model_path"],
+            run_hyperparams["device"],
+        )
+        run_hyperparams["problem"] = DepthEstRepairProblem
+        metric_sort_by = "mee"
+        default_metric_value = 1
 
     print(
         f"Starting session {session_id} on {run_hyperparams['device']}",
@@ -106,10 +115,16 @@ def repair_session(session_id, logs_path, run_hyperparams, unsearched_parameters
 
     os.rename(log_file, status_log_file)
 
-    improvements = {
-        metric: (repaired_metrics[metric] - original_metrics[metric]) / original_metrics[metric] * 100
-        for metric in original_metrics
-    }
+    if run_hyperparams["problem"].improvement_type == ImprovementType.higher_is_better:
+        improvements = {
+            metric: (repaired_metrics[metric] - original_metrics[metric]) / original_metrics[metric] * 100
+            for metric in original_metrics
+        }
+    else:
+        improvements = {
+            metric: (1 - (repaired_metrics[metric] / original_metrics[metric])) * 100
+            for metric in original_metrics
+        }
 
     if metric_sort_by not in improvements:
         improvements[metric_sort_by] = default_metric_value

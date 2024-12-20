@@ -15,10 +15,11 @@ from repair.semseg.problems import (
     ImprovementType,
     SemSegRepairProblem,
 )
-from repair.semseg.weights_repair import repair_weights
+from repair.semseg.weights_repair import repair_weights, interval_filtering
 
 import torch
 import tqdm
+import numpy as np
 
 from .helpers.weight_selection import (
     compute_backward_loss,
@@ -510,6 +511,139 @@ class GroupFiltering(Filtering):
         """Finalize selected Weights."""
         return self.selected_weights
 
+class ProximityFiltering(Filtering):
+    """Wrapper Class for selecting next Weights."""
+
+    def __init__(
+        self,
+        available_weights: dict,
+        budget: int,
+        arguments: dict,
+    ) -> None:
+        """Initialize the Algorithm."""
+        super().__init__(available_weights, [], budget, arguments)
+        self.parsed_weights = []
+        for key in self.available_weights:
+            self.parsed_weights.extend(
+                [[w[0], w[1], w[2] * w[3]] for w in self.available_weights[key]]
+            )
+        self.parsed_weights = sorted(
+            self.parsed_weights, key=lambda x: x[2], reverse=True
+        )
+        self.indices = {}
+        i = 0
+        for key in available_weights:
+            self.indices[key] = i
+            i += 1
+        self.next_selection = []
+        self.explore = True
+        self.iteration_success = False
+        self.evaluation_budget = arguments["evaluation_budget"]
+        print(f"Parsed Weights: {self.parsed_weights}")
+        print(f"Indices: {self.indices}")
+
+    def has_budget(self) -> bool:
+        """Return whether the Algorithm has more budget left."""
+        print(f"[Iteration]: Current evaluation budget is {self.evaluation_budget}")
+        return self.evaluation_budget > 0
+
+    def get_next(self):  # noqa PLR0912
+        """Returns the next set of Weights for filtering."""
+        min_exploration = int(np.floor(self.budget * self.arguments["pair_percent"]))
+        if len(self.next_selection) == 0:
+            # Add 5 new Weights from unique Layers to the next set
+            if self.explore or len(self.selected_weights) == 0:
+                for w in self.parsed_weights:
+                    if len(self.next_selection) >= min_exploration:
+                        break
+                    if w[0] not in [s[0][0] for s in self.next_selection] and w[
+                        0
+                    ] not in [c[0] for c in self.selected_weights]:
+                        self.next_selection.append((w, dict()))
+                for w in self.next_selection:
+                    self.parsed_weights.remove(w[0])
+                self.explore = False
+            else:
+                self.selected_weights = sorted(
+                    self.selected_weights, key=lambda x: x[2], reverse=True
+                )
+                num_candidates = int(
+                    np.ceil(len(self.selected_weights) * self.arguments["pair_percent"])
+                )
+                candidate_weights = self.selected_weights[0:num_candidates]
+
+                # Take 3 for each (past, self, future)
+                for s in candidate_weights:
+                    found = [False, False, False]
+                    for w in self.parsed_weights:
+                        if w in [n[0] for n in self.next_selection]:
+                            continue
+                        if (
+                            self.indices[s[0][0]] - 1 == self.indices[w[0]]
+                            and not found[0]
+                        ):
+                            # Take the previous layer
+                            self.next_selection.append((w, s[1]))
+                            found[0] = True
+                        elif self.indices[s[0][0]] == self.indices[w[0]] and not found[1]:
+                            # Take the current layer
+                            self.next_selection.append((w, s[1]))
+                            found[1] = True
+                        elif (
+                            self.indices[s[0][0]] + 1 == self.indices[w[0]]
+                            and not found[2]
+                        ):
+                            # Take the next layer
+                            self.next_selection.append((w, s[1]))
+                            found[2] = True
+                        if found[0] and found[1] and found[2]:
+                            break
+
+                for w in self.next_selection:
+                    self.parsed_weights.remove(w[0])
+
+                self.explore = True
+
+        selection_type = "Exploration" if not self.explore else "Pairing"
+        print(f"Next: {self.next_selection} for Type: {selection_type}")
+        if len(self.next_selection) == 0:
+            return None, None, None
+
+        weight_pair = self.next_selection[0]
+        next_weight, modifiers = weight_pair
+        self.next_selection.remove(weight_pair)
+        return (
+            next_weight[0],
+            [tuple([next_weight[0], next_weight[1]])],
+            dict(modified_weights=deepcopy(modifiers)),
+        )
+
+    def evaluate_result(
+        self, key, weights, original_metric, final_metric, metric_type, modified_weights
+    ):
+        """Evaluate, whether the current set of weights had a significant impact."""
+        # get how much percentage of the original metric the deviation represents
+        if metric_type == ImprovementType.higher_is_better:
+            deviation = final_metric - original_metric
+        else:
+            deviation = original_metric - final_metric
+
+        assert len(weights) == 1
+        self.selected_weights.append((weights[0], modified_weights, deviation))
+        self.evaluation_budget = self.evaluation_budget - 1
+        return False
+
+    def finalize(self):
+        """Finalize selected Weights."""
+        self.selected_weights = sorted(
+            self.selected_weights, key=lambda x: x[2], reverse=True
+        )
+        num_chosen = min(self.budget, len(self.selected_weights))
+        self.discarded_weights = [
+            s[0] for s in self.selected_weights[num_chosen : len(self.selected_weights)]
+        ]
+        return [s[0] for s in self.selected_weights[0:num_chosen]]
+
 def filter_weights(
     model_copies: List[EIARepairModel],
     problem: EAIRepairProblem,
@@ -545,6 +679,12 @@ def filter_weights(
     """
     if filtering_mode == "group":
         filtering = GroupFiltering(weights, max_weights, dict(significance=significance))
+        bounds = (0, 2)
+    elif filtering_mode == "proximity":
+        filtering = ProximityFiltering(
+            weights, max_weights, dict(evaluation_budget=100, pair_percent=0.25)
+        )
+        search_method = "Interval"
         bounds = (0, 2)
     else: # arachne weight formatting
         with open(f"./results/{experiment_name}/grouped_weights.json", "w") as handle:
@@ -612,22 +752,35 @@ def filter_weights(
             folder = f"{experiment_name}/filtering"
             # Perform the repair process using the repair_weights function
             # this functions performs a search through the weights to repair
-            repaired_model = repair_weights(
-                target_model,
-                weights_to_repair,
-                repair_data_loader,
-                filter_problem,
-                "PSO",
-                devices,
-                bounds=bounds,
-                save_history=False,
-                generations=generations,
-                population=population,
-                folder=folder,
-                name=module_name,
-                retain_model=modified_weights is not None,
-                modified_weights=modified_weights,
-            ).to(devices[0])
+            if search_method == "Interval":
+                repaired_model = interval_filtering(
+                    target_model,
+                    weights_to_repair,
+                    repair_data_loader,
+                    filter_problem,
+                    devices,
+                    bounds=bounds,
+                    folder=folder,
+                    name=module_name,
+                    modified_weights=modified_weights,
+                ).to(devices[0])
+            else:
+                repaired_model = repair_weights(
+                    target_model,
+                    weights_to_repair,
+                    repair_data_loader,
+                    filter_problem,
+                    "PSO",
+                    devices,
+                    bounds=bounds,
+                    save_history=False,
+                    generations=generations,
+                    population=population,
+                    folder=folder,
+                    name=module_name,
+                    retain_model=modified_weights is not None,
+                    modified_weights=modified_weights,
+                ).to(devices[0])
 
             # get repaired model results (to compare with the original)
             repaired_metrics = calculate_metrics(

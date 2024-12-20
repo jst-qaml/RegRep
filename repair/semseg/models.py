@@ -205,3 +205,17 @@ class SemsegModel(EIARepairModel):
         """Initialized msegmentation and loads Weights."""
         # include your pytorch model here as needed by the class EIARepairModel
         pass
+
+class DepthEstModel(EIARepairModel):
+    """Model config class for the semantic segmentation model.
+    
+    Please build in accordance to your model and the EIARepairModel"""
+
+    def __init__(
+        self,
+        model_path: str,
+        device: str,
+    ) -> None:
+        """Initializes model and loads Weights."""
+        # include your pytorch model here as needed by the class EIARepairModel
+        pass

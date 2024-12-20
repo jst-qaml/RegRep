@@ -5,6 +5,7 @@ from enum import Enum
 from multiprocessing import Manager
 from multiprocessing.pool import ThreadPool
 from typing import Any, Callable, List, Tuple, Union
+from functools import partial
 
 import numpy
 
@@ -353,6 +354,69 @@ class SemSegRepairProblem(EAIRepairProblem):
             retain_model,
             score_foo=SemSegRepairProblem.default_scoring_function,
             improvement_type=SemSegRepairProblem.improvement_type,
+            original_modules=original_modules,
+        )
+
+class DepthEstRepairProblem(EAIRepairProblem):
+    """
+    A class to evaluate the Depth Estimation problem for PyTorch DNN repair.
+
+    This class inherits from the Problem class of the pymoo library,
+    which is used for defining optimization problems.
+
+    The Depth Estimation repair problem involves modifying weights of a PyTorch DNN model
+    to improve its performance.
+
+    Attributes:
+        data_loader (torch.utils.data.DataLoader): DataLoader containing the dataset.
+        devices (List[torch.device]): List of devices to distribute the computation.
+        original_named_modules (dict):
+            Dictionary containing the original model's named modules.
+        current_models (List[torch.nn.Module]):
+            List of current models, each with an associated device.
+        current_named_modules (List[dict]):
+            List of dictionaries containing named modules of current models.
+        weights_coords (List[Tuple[str, int]]):
+            A list of tuples containing the module names
+            and the corresponding weight coordinates to be modified.
+        score_foo (callable): A function to score the Depth Estimation predictions.
+    """
+
+    metric_interval = [0, 20]
+    lambda1 = 5.0
+    default_loss_function = partial(
+        edge_loss, metric_interval=metric_interval
+    )
+    target_metric = "mee"
+    available_metrics = {
+        "mee": partial(mean_edge_error, metric_interval=metric_interval, lambda1=lambda1),
+        "mre": partial(mean_relative_error, metric_interval=metric_interval),
+        "mee_full": partial(mean_edge_error, metric_interval=[0,80], use_rel=False),
+        "mre_full": partial(mean_relative_error, metric_interval=[0,80]),
+    }
+    default_scoring_function = available_metrics[target_metric]
+    improvement_type = ImprovementType.lower_is_better
+
+    def __init__(
+        self,
+        original_model: torch.nn.Module,
+        weights_coords: List[Tuple[str, int]],
+        data_loader: torch.utils.data.DataLoader,
+        devices: List[torch.device],
+        bounds: Tuple[int, int] = (0, 2),
+        retain_model: bool = False,
+        score_foo: Callable = available_metrics[target_metric],
+        original_modules: dict = None,
+    ):
+        super().__init__(
+            original_model,
+            weights_coords,
+            data_loader,
+            devices,
+            bounds,
+            retain_model,
+            score_foo,
+            improvement_type=DepthEstRepairProblem.improvement_type,
             original_modules=original_modules,
         )
         

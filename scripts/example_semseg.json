@@ -1,0 +1,41 @@
+{
+    "session_id": 0,
+    "logs_path": ".results/exp_runs/",
+    "run_hyperparameters": {
+        "model": "SemsegModel",
+        "model_path": "",
+        "problem": "SemSegRepairProblem",
+        "fl_method": "filtering",
+        "search_method": "PSO",
+        "device": "cuda:0",
+        "batch_size": 4,
+        "generations": 30,
+        "max_population": 100,
+        "max_weights": 20,
+        "checkpoint": "",
+        "use_precomputation": false,
+        "mode": "group",
+        "significance": 0.0001,
+        "weights_per_layer": 5,
+        "xl": -2,
+        "xu": 4,
+        "repair_data_path": "",
+        "test_data_path": ""
+    },
+    "unsearched_parameters": [
+        "model",
+        "problem",
+        "search_method",
+        "device",
+        "batch_size",
+        "generations",
+        "max_population",
+        "xlxu",
+        "max_weights",
+        "checkpoint",
+        "use_precomputation",
+        "mode",
+        "significance",
+        "weights_per_layer"
+    ]
+}
